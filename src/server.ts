@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import axios from 'axios';
 import { getTrackInfo, searchTracks, getDeezerPreview } from './spotify';
 
 dotenv.config();
@@ -8,6 +9,11 @@ dotenv.config();
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+const PORT = Number(process.env.PORT) || 3000;
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:8081';
+const SPOTIFY_REDIRECT_URI =
+  process.env.SPOTIFY_REDIRECT_URI || `http://localhost:${PORT}/auth/callback`;
 
 // Health check
 app.get('/', (_req, res) => {
@@ -62,7 +68,95 @@ app.get('/song/:id', async (req, res) => {
   }
 });
 
-const PORT = Number(process.env.PORT) || 3000;
+// ──────────────────────────────────────
+// Spotify OAuth
+// ──────────────────────────────────────
+
+app.get('/auth/login', (_req, res) => {
+  const params = new URLSearchParams({
+    response_type: 'code',
+    client_id: process.env.SPOTIFY_CLIENT_ID!,
+    scope: 'streaming user-read-email user-read-private',
+    redirect_uri: SPOTIFY_REDIRECT_URI,
+  });
+  res.redirect(`https://accounts.spotify.com/authorize?${params}`);
+});
+
+app.get('/auth/callback', async (req, res) => {
+  const code = req.query.code as string | undefined;
+  const error = req.query.error as string | undefined;
+
+  if (error || !code) {
+    res.redirect(`${FRONTEND_URL}#auth_error=${error || 'no_code'}`);
+    return;
+  }
+
+  try {
+    const tokenRes = await axios.post(
+      'https://accounts.spotify.com/api/token',
+      new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: SPOTIFY_REDIRECT_URI,
+      }),
+      {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Authorization:
+            'Basic ' +
+            Buffer.from(
+              process.env.SPOTIFY_CLIENT_ID + ':' + process.env.SPOTIFY_CLIENT_SECRET
+            ).toString('base64'),
+        },
+      }
+    );
+
+    const { access_token, refresh_token, expires_in } = tokenRes.data;
+    const fragment = new URLSearchParams({
+      access_token,
+      refresh_token,
+      expires_in: String(expires_in),
+    });
+    res.redirect(`${FRONTEND_URL}#${fragment}`);
+  } catch (err: any) {
+    console.error('OAuth callback error:', err?.response?.data || err.message);
+    res.redirect(`${FRONTEND_URL}#auth_error=token_exchange_failed`);
+  }
+});
+
+app.post('/auth/refresh', async (req, res) => {
+  const { refresh_token } = req.body;
+  if (!refresh_token) {
+    res.status(400).json({ error: 'refresh_token requerido' });
+    return;
+  }
+
+  try {
+    const tokenRes = await axios.post(
+      'https://accounts.spotify.com/api/token',
+      new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token,
+      }),
+      {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Authorization:
+            'Basic ' +
+            Buffer.from(
+              process.env.SPOTIFY_CLIENT_ID + ':' + process.env.SPOTIFY_CLIENT_SECRET
+            ).toString('base64'),
+        },
+      }
+    );
+
+    res.json(tokenRes.data);
+  } catch (err: any) {
+    console.error('Refresh error:', err?.response?.data || err.message);
+    res.status(500).json({ error: 'Error refrescando token' });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Servidor corriendo en http://localhost:${PORT}`);
 });
