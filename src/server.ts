@@ -90,24 +90,61 @@ app.get('/song/:id', async (req, res) => {
 // Full song download via yt-dlp
 // ──────────────────────────────────────
 
-// Check if a song is already downloaded
+// Track in-progress downloads: trackId -> { status, error? }
+const downloadJobs = new Map<string, { status: 'downloading' | 'ready' | 'error'; error?: string }>();
+
+// Check download status
 app.get('/download/:id/status', async (req, res) => {
-  res.json({ cached: isCached(req.params.id) });
+  const trackId = req.params.id;
+  if (isCached(trackId)) {
+    res.json({ status: 'ready' });
+    return;
+  }
+  const job = downloadJobs.get(trackId);
+  if (job) {
+    res.json({ status: job.status, error: job.error });
+    return;
+  }
+  res.json({ status: 'none' });
 });
 
-// Trigger download and return when ready (lightweight — no file streaming)
+// Trigger download in background — returns immediately
 app.get('/download/:id/prepare', async (req, res) => {
   try {
     const trackId = req.params.id;
+
+    // Already cached
+    if (isCached(trackId)) {
+      res.json({ status: 'ready' });
+      return;
+    }
+
+    // Already in progress
+    const existing = downloadJobs.get(trackId);
+    if (existing && existing.status === 'downloading') {
+      res.json({ status: 'downloading' });
+      return;
+    }
+
     const trackInfo = await getTrackInfo(trackId);
+    console.log(`Preparing (async): ${trackInfo.title} - ${trackInfo.artist}`);
 
-    console.log(`Preparing: ${trackInfo.title} - ${trackInfo.artist}`);
-    await downloadSong(trackId, trackInfo.title, trackInfo.artist);
+    // Mark as downloading and kick off in background
+    downloadJobs.set(trackId, { status: 'downloading' });
+    downloadSong(trackId, trackInfo.title, trackInfo.artist)
+      .then(() => {
+        downloadJobs.set(trackId, { status: 'ready' });
+        console.log(`Ready: ${trackInfo.title}`);
+      })
+      .catch((err) => {
+        downloadJobs.set(trackId, { status: 'error', error: err.message });
+        console.error(`Download failed: ${trackInfo.title}`, err.message);
+      });
 
-    res.json({ ready: true });
+    res.json({ status: 'downloading' });
   } catch (error: any) {
-    console.error('Prepare error:', error.message, error.stack);
-    res.status(500).json({ error: error.message || 'Error descargando canción' });
+    console.error('Prepare error:', error.message);
+    res.status(500).json({ status: 'error', error: error.message });
   }
 });
 
