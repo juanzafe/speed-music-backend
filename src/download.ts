@@ -11,6 +11,9 @@ if (!fs.existsSync(DOWNLOADS_DIR)) {
 
 /** Resolve yt-dlp binary path */
 function findYtDlp(): string {
+  // On Linux / Docker, yt-dlp is in PATH
+  if (process.platform !== 'win32') return 'yt-dlp';
+
   const localAppData = process.env.LOCALAPPDATA || '';
 
   // Check winget Links folder
@@ -33,6 +36,9 @@ function findYtDlp(): string {
 
 /** Resolve ffmpeg directory for yt-dlp */
 function findFfmpegDir(): string | undefined {
+  // On Linux / Docker, ffmpeg is in PATH — no need to specify
+  if (process.platform !== 'win32') return undefined;
+
   const localAppData = process.env.LOCALAPPDATA || '';
   const packagesDir = path.join(localAppData, 'Microsoft', 'WinGet', 'Packages');
   if (fs.existsSync(packagesDir)) {
