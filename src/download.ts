@@ -135,30 +135,19 @@ export function getBinInfo() {
 export { ensureBinaries };
 
 /**
- * Downloads a full song from YouTube using yt-dlp.
- * Searches by "{title} {artist}" and picks the best audio match.
- * Returns the path to the downloaded mp3 file.
+ * Run yt-dlp with given search prefix and return output path if successful.
  */
-export async function downloadSong(
-  trackId: string,
-  title: string,
-  artist: string
+function runYtDlp(
+  ytdlp: string,
+  searchPrefix: string,
+  query: string,
+  outputPath: string,
+  ffmpegDir?: string,
+  extraArgs: string[] = []
 ): Promise<string> {
-  const outputPath = path.join(DOWNLOADS_DIR, `${trackId}.mp3`);
-
-  // If already downloaded, return cached file
-  if (fs.existsSync(outputPath)) {
-    return outputPath;
-  }
-
-  // Ensure binaries are available (downloads on first call)
-  const { ytdlp, ffmpegDir } = await ensureBinaries();
-
-  const query = `${title} ${artist}`;
-
   return new Promise((resolve, reject) => {
     const args = [
-      `ytsearch1:${query}`,
+      `${searchPrefix}${query}`,
       '--extract-audio',
       '--audio-format', 'mp3',
       '--audio-quality', '192K',
@@ -166,7 +155,7 @@ export async function downloadSong(
       '--max-downloads', '1',
       '--output', outputPath.replace('.mp3', '.%(ext)s'),
       '--no-warnings',
-      '--extractor-args', 'youtube:player_client=web',
+      ...extraArgs,
     ];
 
     if (ffmpegDir) {
@@ -175,30 +164,60 @@ export async function downloadSong(
 
     console.log(`Running: ${ytdlp} ${args.join(' ')}`);
 
-    // Include bin/ in PATH so yt-dlp can find node for JS challenges
     const env = { ...process.env, PATH: `${BIN_DIR}:${process.env.PATH}` };
 
     execFile(ytdlp, args, { timeout: 120_000, env }, (error, stdout, stderr) => {
-      // yt-dlp exits with non-zero when --max-downloads is hit, but the file is still produced
       if (fs.existsSync(outputPath)) {
         resolve(outputPath);
         return;
       }
 
       if (error) {
-        console.error('yt-dlp stderr:', stderr);
-        console.error('yt-dlp stdout:', stdout);
-        console.error('yt-dlp error:', error.message);
-        reject(new Error(`yt-dlp failed: ${stderr || error.message}`));
+        console.error(`[${searchPrefix}] stderr:`, stderr?.substring(0, 500));
+        console.error(`[${searchPrefix}] error:`, error.message);
+        reject(new Error(stderr || error.message));
         return;
       }
 
-      // List files to debug
-      const files = fs.readdirSync(DOWNLOADS_DIR);
-      console.error('Files in downloads:', files);
-      reject(new Error('Archivo no encontrado después de la descarga'));
+      reject(new Error('File not found after download'));
     });
   });
+}
+
+/**
+ * Downloads a full song using yt-dlp.
+ * Tries YouTube first, falls back to SoundCloud if YouTube blocks (bot detection).
+ */
+export async function downloadSong(
+  trackId: string,
+  title: string,
+  artist: string
+): Promise<string> {
+  const outputPath = path.join(DOWNLOADS_DIR, `${trackId}.mp3`);
+
+  if (fs.existsSync(outputPath)) {
+    return outputPath;
+  }
+
+  const { ytdlp, ffmpegDir } = await ensureBinaries();
+  const query = `${title} ${artist}`;
+
+  // Try YouTube first
+  try {
+    return await runYtDlp(ytdlp, 'ytsearch1:', query, outputPath, ffmpegDir, [
+      '--extractor-args', 'youtube:player_client=web',
+    ]);
+  } catch (ytErr: any) {
+    console.warn('YouTube failed, trying SoundCloud...', ytErr.message?.substring(0, 200));
+  }
+
+  // Fallback: SoundCloud
+  try {
+    return await runYtDlp(ytdlp, 'scsearch1:', query, outputPath, ffmpegDir);
+  } catch (scErr: any) {
+    console.error('SoundCloud also failed:', scErr.message?.substring(0, 200));
+    throw new Error('No se pudo descargar la canción de ninguna fuente');
+  }
 }
 
 /** Check if a song is already cached */
