@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import axios from 'axios';
 import path from 'path';
+import fs from 'fs';
 import { getTrackInfo, searchTracks, getDeezerPreview } from './spotify';
 import { downloadSong, isCached, ensureBinaries, getBinInfo } from './download';
 
@@ -148,11 +149,12 @@ app.get('/song/:id', async (req, res) => {
 // Track in-progress downloads: trackId -> { status, error? }
 const downloadJobs = new Map<string, { status: 'downloading' | 'ready' | 'error'; error?: string }>();
 
-// Check download status
+// Check download status (includes file size when ready)
 app.get('/download/:id/status', async (req, res) => {
   const trackId = req.params.id;
   if (isCached(trackId)) {
-    res.json({ status: 'ready' });
+    const size = fs.statSync(path.join(__dirname, '..', 'downloads', `${trackId}.mp3`)).size;
+    res.json({ status: 'ready', size });
     return;
   }
   const job = downloadJobs.get(trackId);
@@ -161,6 +163,31 @@ app.get('/download/:id/status', async (req, res) => {
     return;
   }
   res.json({ status: 'none' });
+});
+
+// Get YouTube video ID for client-side Piped download
+app.get('/download/:id/video-id', async (req, res) => {
+  try {
+    const trackId = req.params.id;
+    const trackInfo = await getTrackInfo(trackId);
+    const query = `${trackInfo.title} ${trackInfo.artist}`;
+
+    const { ytdlp } = await ensureBinaries();
+    const { execFileSync: efs } = require('child_process');
+    const videoId = efs(ytdlp, [
+      '--flat-playlist', '--print', 'id', `ytsearch1:${query}`, '--no-warnings',
+    ], { timeout: 30_000, encoding: 'utf8' }).trim();
+
+    if (!videoId) {
+      res.status(404).json({ error: 'No video found' });
+      return;
+    }
+
+    res.json({ videoId, title: trackInfo.title, artist: trackInfo.artist });
+  } catch (error: any) {
+    console.error('Video ID error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Trigger download in background — returns immediately
