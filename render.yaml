@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: speed-music-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: SPOTIFY_CLIENT_ID
+        sync: false
+      - key: SPOTIFY_CLIENT_SECRET
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: SPOTIFY_REDIRECT_URI
+        sync: false
