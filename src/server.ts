@@ -79,7 +79,23 @@ app.get('/download/:id/status', async (req, res) => {
   res.json({ cached: isCached(req.params.id) });
 });
 
-// Download and stream full song
+// Trigger download and return when ready (lightweight — no file streaming)
+app.get('/download/:id/prepare', async (req, res) => {
+  try {
+    const trackId = req.params.id;
+    const trackInfo = await getTrackInfo(trackId);
+
+    console.log(`Preparing: ${trackInfo.title} - ${trackInfo.artist}`);
+    await downloadSong(trackId, trackInfo.title, trackInfo.artist);
+
+    res.json({ ready: true });
+  } catch (error: any) {
+    console.error('Prepare error:', error.message);
+    res.status(500).json({ error: 'Error descargando canción' });
+  }
+});
+
+// Stream full song file
 app.get('/download/:id', async (req, res) => {
   try {
     const trackId = req.params.id;
