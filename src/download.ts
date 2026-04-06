@@ -231,9 +231,8 @@ export async function downloadSong(
 // ── Piped API (YouTube proxy) ──────────────────────────
 
 const PIPED_INSTANCES = [
-  'https://pipedapi.kavin.rocks',
-  'https://pipedapi.adminforge.de',
-  'https://api.piped.privacydev.net',
+  'https://api.piped.private.coffee',
+  'https://api.piped.projectsegfau.lt',
 ];
 
 /**
