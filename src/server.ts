@@ -25,9 +25,28 @@ app.get('/', (_req, res) => {
 // Debug endpoint (temporary)
 app.get('/debug', (_req, res) => {
   const { execFileSync } = require('child_process');
+  const fs = require('fs');
   let ytdlpVersion = 'unknown';
   try { ytdlpVersion = execFileSync(YT_DLP, ['--version'], { encoding: 'utf8', timeout: 5000 }).trim(); } catch (e: any) { ytdlpVersion = `error: ${e.message}`; }
-  res.json({ ytdlp: YT_DLP, ytdlpVersion, ffmpeg: FFMPEG_DIR, platform: process.platform });
+
+  // Check bin/ directory
+  const binDir = path.join(__dirname, '..', 'bin');
+  let binExists = fs.existsSync(binDir);
+  let binContents: string[] = [];
+  try { binContents = fs.readdirSync(binDir); } catch (_e: any) {}
+
+  // Check __dirname and cwd
+  res.json({
+    ytdlp: YT_DLP,
+    ytdlpVersion,
+    ffmpeg: FFMPEG_DIR,
+    platform: process.platform,
+    __dirname,
+    cwd: process.cwd(),
+    binDir,
+    binExists,
+    binContents,
+  });
 });
 
 // Buscar canciones por nombre
