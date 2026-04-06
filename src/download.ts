@@ -11,13 +11,12 @@ if (!fs.existsSync(DOWNLOADS_DIR)) {
 
 /** Resolve yt-dlp binary path */
 function findYtDlp(): string {
-  // On Linux / Docker, yt-dlp is in PATH — resolve absolute path
+  // Check local bin/ directory first (downloaded by setup-bin.js)
+  const localBin = path.join(__dirname, '..', 'bin', 'yt-dlp');
+  if (fs.existsSync(localBin)) return localBin;
+
+  // On Linux / Docker, check PATH
   if (process.platform !== 'win32') {
-    try {
-      const resolved = execFileSync('which', ['yt-dlp'], { encoding: 'utf8' }).trim();
-      if (resolved) return resolved;
-    } catch { /* fall through */ }
-    // Common install locations
     if (fs.existsSync('/usr/local/bin/yt-dlp')) return '/usr/local/bin/yt-dlp';
     return 'yt-dlp';
   }
@@ -44,6 +43,11 @@ function findYtDlp(): string {
 
 /** Resolve ffmpeg directory for yt-dlp */
 function findFfmpegDir(): string | undefined {
+  // Check local bin/ directory first (downloaded by setup-bin.js)
+  const localBin = path.join(__dirname, '..', 'bin');
+  if (fs.existsSync(path.join(localBin, 'ffmpeg'))) return localBin;
+  if (fs.existsSync(path.join(localBin, 'ffmpeg.exe'))) return localBin;
+
   // On Linux / Docker, ffmpeg is in PATH — no need to specify
   if (process.platform !== 'win32') return undefined;
 
