@@ -4,7 +4,7 @@ import dotenv from 'dotenv';
 import axios from 'axios';
 import path from 'path';
 import { getTrackInfo, searchTracks, getDeezerPreview } from './spotify';
-import { downloadSong, isCached, YT_DLP, FFMPEG_DIR } from './download';
+import { downloadSong, isCached, ensureBinaries, getBinInfo } from './download';
 
 dotenv.config();
 
@@ -23,30 +23,19 @@ app.get('/', (_req, res) => {
 });
 
 // Debug endpoint (temporary)
-app.get('/debug', (_req, res) => {
-  const { execFileSync } = require('child_process');
-  const fs = require('fs');
-  let ytdlpVersion = 'unknown';
-  try { ytdlpVersion = execFileSync(YT_DLP, ['--version'], { encoding: 'utf8', timeout: 5000 }).trim(); } catch (e: any) { ytdlpVersion = `error: ${e.message}`; }
-
-  // Check bin/ directory
-  const binDir = path.join(__dirname, '..', 'bin');
-  let binExists = fs.existsSync(binDir);
-  let binContents: string[] = [];
-  try { binContents = fs.readdirSync(binDir); } catch (_e: any) {}
-
-  // Check __dirname and cwd
-  res.json({
-    ytdlp: YT_DLP,
-    ytdlpVersion,
-    ffmpeg: FFMPEG_DIR,
-    platform: process.platform,
-    __dirname,
-    cwd: process.cwd(),
-    binDir,
-    binExists,
-    binContents,
-  });
+app.get('/debug', async (_req, res) => {
+  try {
+    const bins = await ensureBinaries();
+    const info = getBinInfo();
+    let ytdlpVersion = 'unknown';
+    try {
+      const { execFileSync } = require('child_process');
+      ytdlpVersion = execFileSync(bins.ytdlp, ['--version'], { encoding: 'utf8', timeout: 10000 }).trim();
+    } catch (e: any) { ytdlpVersion = `error: ${e.message}`; }
+    res.json({ ...info, ytdlpVersion });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message, stack: e.stack });
+  }
 });
 
 // Buscar canciones por nombre

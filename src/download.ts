@@ -1,33 +1,19 @@
-import { execFile, execFileSync } from 'child_process';
+import { execFile, execFileSync, execSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 
 const DOWNLOADS_DIR = path.join(__dirname, '..', 'downloads');
+const BIN_DIR = path.join(__dirname, '..', 'bin');
 
-// Ensure downloads directory exists
-if (!fs.existsSync(DOWNLOADS_DIR)) {
-  fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
-}
+// Ensure directories exist
+if (!fs.existsSync(DOWNLOADS_DIR)) fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
+if (!fs.existsSync(BIN_DIR)) fs.mkdirSync(BIN_DIR, { recursive: true });
 
-/** Resolve yt-dlp binary path */
-function findYtDlp(): string {
-  // Check local bin/ directory first (downloaded by setup-bin.js)
-  const localBin = path.join(__dirname, '..', 'bin', 'yt-dlp');
-  if (fs.existsSync(localBin)) return localBin;
-
-  // On Linux / Docker, check PATH
-  if (process.platform !== 'win32') {
-    if (fs.existsSync('/usr/local/bin/yt-dlp')) return '/usr/local/bin/yt-dlp';
-    return 'yt-dlp';
-  }
-
+/** On Windows, find local winget-installed yt-dlp */
+function findYtDlpWindows(): string {
   const localAppData = process.env.LOCALAPPDATA || '';
-
-  // Check winget Links folder
   const linksPath = path.join(localAppData, 'Microsoft', 'WinGet', 'Links', 'yt-dlp.exe');
   if (fs.existsSync(linksPath)) return linksPath;
-
-  // Check winget Packages folder (common on Windows)
   const packagesDir = path.join(localAppData, 'Microsoft', 'WinGet', 'Packages');
   if (fs.existsSync(packagesDir)) {
     const dirs = fs.readdirSync(packagesDir).filter(d => d.startsWith('yt-dlp.yt-dlp'));
@@ -36,28 +22,17 @@ function findYtDlp(): string {
       if (fs.existsSync(exe)) return exe;
     }
   }
-
-  // Fallback to PATH
   return 'yt-dlp';
 }
 
-/** Resolve ffmpeg directory for yt-dlp */
-function findFfmpegDir(): string | undefined {
-  // Check local bin/ directory first (downloaded by setup-bin.js)
-  const localBin = path.join(__dirname, '..', 'bin');
-  if (fs.existsSync(path.join(localBin, 'ffmpeg'))) return localBin;
-  if (fs.existsSync(path.join(localBin, 'ffmpeg.exe'))) return localBin;
-
-  // On Linux / Docker, ffmpeg is in PATH — no need to specify
-  if (process.platform !== 'win32') return undefined;
-
+/** On Windows, find local winget-installed ffmpeg */
+function findFfmpegDirWindows(): string | undefined {
   const localAppData = process.env.LOCALAPPDATA || '';
   const packagesDir = path.join(localAppData, 'Microsoft', 'WinGet', 'Packages');
   if (fs.existsSync(packagesDir)) {
     const dirs = fs.readdirSync(packagesDir).filter(d => d.startsWith('yt-dlp.FFmpeg'));
     for (const dir of dirs) {
       const binDir = path.join(packagesDir, dir);
-      // ffmpeg might be nested in a subfolder
       const nested = fs.readdirSync(binDir).find(f => f.startsWith('ffmpeg'));
       if (nested) {
         const bin = path.join(binDir, nested, 'bin');
@@ -69,15 +44,83 @@ function findFfmpegDir(): string | undefined {
   return undefined;
 }
 
-const YT_DLP = findYtDlp();
-const FFMPEG_DIR = findFfmpegDir();
+let _ytdlp: string | null = null;
+let _ffmpegDir: string | undefined = undefined;
+let _binariesReady = false;
 
-console.log('yt-dlp path:', YT_DLP);
-console.log('yt-dlp exists:', fs.existsSync(YT_DLP));
-console.log('ffmpeg dir:', FFMPEG_DIR);
-console.log('platform:', process.platform);
+/**
+ * Ensure yt-dlp and ffmpeg are available. Downloads them on first call (Linux only).
+ * On Windows, finds locally installed binaries.
+ */
+async function ensureBinaries(): Promise<{ ytdlp: string; ffmpegDir?: string }> {
+  if (_binariesReady && _ytdlp) return { ytdlp: _ytdlp, ffmpegDir: _ffmpegDir };
 
-export { YT_DLP, FFMPEG_DIR };
+  if (process.platform === 'win32') {
+    _ytdlp = findYtDlpWindows();
+    _ffmpegDir = findFfmpegDirWindows();
+    _binariesReady = true;
+    console.log('yt-dlp (win):', _ytdlp);
+    console.log('ffmpeg dir (win):', _ffmpegDir);
+    return { ytdlp: _ytdlp, ffmpegDir: _ffmpegDir };
+  }
+
+  // Linux: download standalone binaries
+  const ytdlpPath = path.join(BIN_DIR, 'yt-dlp');
+  if (!fs.existsSync(ytdlpPath)) {
+    console.log('Downloading yt-dlp_linux standalone...');
+    execSync(
+      `curl -L --retry 3 --max-time 120 -o "${ytdlpPath}" "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux"`,
+      { stdio: 'inherit', timeout: 150_000 }
+    );
+    fs.chmodSync(ytdlpPath, 0o755);
+    console.log('yt-dlp downloaded OK');
+  }
+
+  const ffmpegPath = path.join(BIN_DIR, 'ffmpeg');
+  if (!fs.existsSync(ffmpegPath)) {
+    console.log('Downloading ffmpeg static...');
+    const tarPath = path.join(BIN_DIR, 'ffmpeg.tar.xz');
+    execSync(
+      `curl -L --retry 3 --max-time 300 -o "${tarPath}" "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"`,
+      { stdio: 'inherit', timeout: 360_000 }
+    );
+    console.log('Extracting ffmpeg...');
+    // Extract to temp, then move just the ffmpeg binary
+    execSync(
+      `cd "${BIN_DIR}" && tar -xJf ffmpeg.tar.xz && cp ffmpeg-*-amd64-static/ffmpeg . && rm -rf ffmpeg-*-amd64-static ffmpeg.tar.xz`,
+      { stdio: 'inherit', timeout: 120_000 }
+    );
+    fs.chmodSync(ffmpegPath, 0o755);
+    console.log('ffmpeg extracted OK');
+  }
+
+  _ytdlp = ytdlpPath;
+  _ffmpegDir = fs.existsSync(ffmpegPath) ? BIN_DIR : undefined;
+  _binariesReady = true;
+
+  // Verify
+  try {
+    const v = execFileSync(ytdlpPath, ['--version'], { encoding: 'utf8', timeout: 10_000 }).trim();
+    console.log('yt-dlp version:', v);
+  } catch (e: any) { console.error('yt-dlp verify failed:', e.message); }
+
+  return { ytdlp: _ytdlp, ffmpegDir: _ffmpegDir };
+}
+
+/** Expose for debug endpoint */
+export function getBinInfo() {
+  return {
+    ytdlp: _ytdlp,
+    ffmpegDir: _ffmpegDir,
+    binariesReady: _binariesReady,
+    binDir: BIN_DIR,
+    binExists: fs.existsSync(BIN_DIR),
+    binContents: fs.existsSync(BIN_DIR) ? fs.readdirSync(BIN_DIR) : [],
+    platform: process.platform,
+  };
+}
+
+export { ensureBinaries };
 
 /**
  * Downloads a full song from YouTube using yt-dlp.
@@ -96,6 +139,9 @@ export async function downloadSong(
     return outputPath;
   }
 
+  // Ensure binaries are available (downloads on first call)
+  const { ytdlp, ffmpegDir } = await ensureBinaries();
+
   const query = `${title} ${artist}`;
 
   return new Promise((resolve, reject) => {
@@ -110,13 +156,13 @@ export async function downloadSong(
       '--no-warnings',
     ];
 
-    if (FFMPEG_DIR) {
-      args.push('--ffmpeg-location', FFMPEG_DIR);
+    if (ffmpegDir) {
+      args.push('--ffmpeg-location', ffmpegDir);
     }
 
-    console.log(`Running: ${YT_DLP} ${args.join(' ')}`);
+    console.log(`Running: ${ytdlp} ${args.join(' ')}`);
 
-    execFile(YT_DLP, args, { timeout: 120_000 }, (error, stdout, stderr) => {
+    execFile(ytdlp, args, { timeout: 120_000 }, (error, stdout, stderr) => {
       // yt-dlp exits with non-zero when --max-downloads is hit, but the file is still produced
       if (fs.existsSync(outputPath)) {
         resolve(outputPath);
