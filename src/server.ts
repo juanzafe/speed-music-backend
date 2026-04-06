@@ -165,24 +165,65 @@ app.get('/download/:id/status', async (req, res) => {
   res.json({ status: 'none' });
 });
 
+// Cache for video IDs to avoid repeated searches
+const videoIdCache = new Map<string, string>();
+
 // Get YouTube video ID for client-side Piped download
 app.get('/download/:id/video-id', async (req, res) => {
   try {
     const trackId = req.params.id;
+
+    // Check cache first
+    if (videoIdCache.has(trackId)) {
+      const trackInfo = await getTrackInfo(trackId);
+      res.json({ videoId: videoIdCache.get(trackId), title: trackInfo.title, artist: trackInfo.artist });
+      return;
+    }
+
     const trackInfo = await getTrackInfo(trackId);
     const query = `${trackInfo.title} ${trackInfo.artist}`;
 
-    const { ytdlp } = await ensureBinaries();
-    const { execFileSync: efs } = require('child_process');
-    const videoId = efs(ytdlp, [
-      '--flat-playlist', '--print', 'id', `ytsearch1:${query}`, '--no-warnings',
-    ], { timeout: 30_000, encoding: 'utf8' }).trim();
+    let videoId = '';
+
+    // Try Piped search first (faster, no yt-dlp needed)
+    const pipedInstances = [
+      'https://api.piped.private.coffee',
+      'https://api.piped.projectsegfau.lt',
+    ];
+    for (const instance of pipedInstances) {
+      try {
+        const searchRes = await axios.get(`${instance}/search`, {
+          params: { q: query, filter: 'music_songs' },
+          timeout: 10_000,
+        });
+        const items = searchRes.data?.items;
+        if (items?.length) {
+          const url: string = items[0].url || '';
+          videoId = url.replace('/watch?v=', '').split('&')[0];
+          if (videoId) break;
+        }
+      } catch {}
+    }
+
+    // Fallback to yt-dlp search
+    if (!videoId) {
+      try {
+        const { ytdlp } = await ensureBinaries();
+        const { execFileSync: efs } = require('child_process');
+        videoId = efs(ytdlp, [
+          '--flat-playlist', '--print', 'id', `ytsearch1:${query}`, '--no-warnings',
+        ], { timeout: 20_000, encoding: 'utf8' }).trim();
+      } catch (e: any) {
+        console.warn('yt-dlp search failed:', e.message?.substring(0, 100));
+      }
+    }
 
     if (!videoId) {
       res.status(404).json({ error: 'No video found' });
       return;
     }
 
+    videoIdCache.set(trackId, videoId);
     res.json({ videoId, title: trackInfo.title, artist: trackInfo.artist });
   } catch (error: any) {
     console.error('Video ID error:', error.message);
