@@ -26,10 +26,12 @@ app.get('/', (_req, res) => {
 app.get('/test-download', async (_req, res) => {
   try {
     const { ytdlp, ffmpegDir } = await ensureBinaries();
+    const info = getBinInfo();
     const { execFile: ef } = require('child_process');
-    const args = ['ytsearch1:Bohemian Rhapsody Queen', '--extract-audio', '--audio-format', 'mp3', '--audio-quality', '192K', '--no-playlist', '--max-downloads', '1', '--output', '/tmp/test.%(ext)s', '--no-warnings', '--verbose'];
+    const args = ['ytsearch1:Bohemian Rhapsody Queen', '--extract-audio', '--audio-format', 'mp3', '--audio-quality', '192K', '--no-playlist', '--max-downloads', '1', '--output', '/tmp/test.%(ext)s', '--no-warnings', '--verbose', '--extractor-args', 'youtube:player_client=web'];
     if (ffmpegDir) args.push('--ffmpeg-location', ffmpegDir);
-    ef(ytdlp, args, { timeout: 90_000 }, (error: any, stdout: string, stderr: string) => {
+    const env = { ...process.env, PATH: `${info.binDir}:${process.env.PATH}` };
+    ef(ytdlp, args, { timeout: 90_000, env }, (error: any, stdout: string, stderr: string) => {
       res.json({ error: error?.message, stdout: stdout?.substring(0, 2000), stderr: stderr?.substring(0, 2000), code: error?.code });
     });
   } catch (e: any) {

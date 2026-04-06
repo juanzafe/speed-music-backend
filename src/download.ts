@@ -98,6 +98,18 @@ async function ensureBinaries(): Promise<{ ytdlp: string; ffmpegDir?: string }> 
   _ffmpegDir = fs.existsSync(ffmpegPath) ? BIN_DIR : undefined;
   _binariesReady = true;
 
+  // Symlink node into bin/ so yt-dlp can find it for JS challenges
+  const nodeLink = path.join(BIN_DIR, 'node');
+  if (!fs.existsSync(nodeLink)) {
+    try {
+      const nodePath = execSync('which node', { encoding: 'utf8', timeout: 5_000 }).trim();
+      if (nodePath && fs.existsSync(nodePath)) {
+        fs.symlinkSync(nodePath, nodeLink);
+        console.log('Symlinked node:', nodePath, '->', nodeLink);
+      }
+    } catch (e: any) { console.warn('Could not symlink node:', e.message); }
+  }
+
   // Verify
   try {
     const v = execFileSync(ytdlpPath, ['--version'], { encoding: 'utf8', timeout: 10_000 }).trim();
@@ -154,6 +166,7 @@ export async function downloadSong(
       '--max-downloads', '1',
       '--output', outputPath.replace('.mp3', '.%(ext)s'),
       '--no-warnings',
+      '--extractor-args', 'youtube:player_client=web',
     ];
 
     if (ffmpegDir) {
@@ -162,7 +175,10 @@ export async function downloadSong(
 
     console.log(`Running: ${ytdlp} ${args.join(' ')}`);
 
-    execFile(ytdlp, args, { timeout: 120_000 }, (error, stdout, stderr) => {
+    // Include bin/ in PATH so yt-dlp can find node for JS challenges
+    const env = { ...process.env, PATH: `${BIN_DIR}:${process.env.PATH}` };
+
+    execFile(ytdlp, args, { timeout: 120_000, env }, (error, stdout, stderr) => {
       // yt-dlp exits with non-zero when --max-downloads is hit, but the file is still produced
       if (fs.existsSync(outputPath)) {
         resolve(outputPath);
