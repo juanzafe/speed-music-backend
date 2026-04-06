@@ -4,7 +4,7 @@ import dotenv from 'dotenv';
 import axios from 'axios';
 import path from 'path';
 import { getTrackInfo, searchTracks, getDeezerPreview } from './spotify';
-import { downloadSong, isCached } from './download';
+import { downloadSong, isCached, YT_DLP, FFMPEG_DIR } from './download';
 
 dotenv.config();
 
@@ -20,6 +20,14 @@ const SPOTIFY_REDIRECT_URI =
 // Health check
 app.get('/', (_req, res) => {
   res.send('Backend funcionando 🚀');
+});
+
+// Debug endpoint (temporary)
+app.get('/debug', (_req, res) => {
+  const { execFileSync } = require('child_process');
+  let ytdlpVersion = 'unknown';
+  try { ytdlpVersion = execFileSync(YT_DLP, ['--version'], { encoding: 'utf8', timeout: 5000 }).trim(); } catch (e: any) { ytdlpVersion = `error: ${e.message}`; }
+  res.json({ ytdlp: YT_DLP, ytdlpVersion, ffmpeg: FFMPEG_DIR, platform: process.platform });
 });
 
 // Buscar canciones por nombre
@@ -90,8 +98,8 @@ app.get('/download/:id/prepare', async (req, res) => {
 
     res.json({ ready: true });
   } catch (error: any) {
-    console.error('Prepare error:', error.message);
-    res.status(500).json({ error: 'Error descargando canción' });
+    console.error('Prepare error:', error.message, error.stack);
+    res.status(500).json({ error: error.message || 'Error descargando canción' });
   }
 });
 

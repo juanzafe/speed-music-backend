@@ -69,7 +69,11 @@ const YT_DLP = findYtDlp();
 const FFMPEG_DIR = findFfmpegDir();
 
 console.log('yt-dlp path:', YT_DLP);
+console.log('yt-dlp exists:', fs.existsSync(YT_DLP));
 console.log('ffmpeg dir:', FFMPEG_DIR);
+console.log('platform:', process.platform);
+
+export { YT_DLP, FFMPEG_DIR };
 
 /**
  * Downloads a full song from YouTube using yt-dlp.
