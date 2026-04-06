@@ -2,7 +2,9 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import axios from 'axios';
+import path from 'path';
 import { getTrackInfo, searchTracks, getDeezerPreview } from './spotify';
+import { downloadSong, isCached } from './download';
 
 dotenv.config();
 
@@ -69,6 +71,33 @@ app.get('/song/:id', async (req, res) => {
 });
 
 // ──────────────────────────────────────
+// Full song download via yt-dlp
+// ──────────────────────────────────────
+
+// Check if a song is already downloaded
+app.get('/download/:id/status', async (req, res) => {
+  res.json({ cached: isCached(req.params.id) });
+});
+
+// Download and stream full song
+app.get('/download/:id', async (req, res) => {
+  try {
+    const trackId = req.params.id;
+    const trackInfo = await getTrackInfo(trackId);
+
+    console.log(`Downloading: ${trackInfo.title} - ${trackInfo.artist}`);
+    const filePath = await downloadSong(trackId, trackInfo.title, trackInfo.artist);
+
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.sendFile(path.resolve(filePath));
+  } catch (error: any) {
+    console.error('Download error:', error.message);
+    res.status(500).json({ error: 'Error descargando canción' });
+  }
+});
+
+// ──────────────────────────────────────
 // Spotify OAuth
 // ──────────────────────────────────────
 
@@ -119,8 +148,13 @@ app.get('/auth/callback', async (req, res) => {
     });
     res.redirect(`${FRONTEND_URL}#${fragment}`);
   } catch (err: any) {
-    console.error('OAuth callback error:', err?.response?.data || err.message);
-    res.redirect(`${FRONTEND_URL}#auth_error=token_exchange_failed`);
+    const spotifyError = err?.response?.data;
+    console.error('OAuth callback error STATUS:', err?.response?.status);
+    console.error('OAuth callback error DATA:', JSON.stringify(spotifyError, null, 2));
+    console.error('OAuth callback error MSG:', err.message);
+    console.error('Redirect URI used:', SPOTIFY_REDIRECT_URI);
+    const errorDetail = spotifyError?.error_description || spotifyError?.error || 'token_exchange_failed';
+    res.redirect(`${FRONTEND_URL}#auth_error=${encodeURIComponent(errorDetail)}`);
   }
 });
 
