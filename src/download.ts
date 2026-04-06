@@ -1,4 +1,4 @@
-import { execFile } from 'child_process';
+import { execFile, execFileSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 
@@ -11,8 +11,16 @@ if (!fs.existsSync(DOWNLOADS_DIR)) {
 
 /** Resolve yt-dlp binary path */
 function findYtDlp(): string {
-  // On Linux / Docker, yt-dlp is in PATH
-  if (process.platform !== 'win32') return 'yt-dlp';
+  // On Linux / Docker, yt-dlp is in PATH — resolve absolute path
+  if (process.platform !== 'win32') {
+    try {
+      const resolved = execFileSync('which', ['yt-dlp'], { encoding: 'utf8' }).trim();
+      if (resolved) return resolved;
+    } catch { /* fall through */ }
+    // Common install locations
+    if (fs.existsSync('/usr/local/bin/yt-dlp')) return '/usr/local/bin/yt-dlp';
+    return 'yt-dlp';
+  }
 
   const localAppData = process.env.LOCALAPPDATA || '';
 
