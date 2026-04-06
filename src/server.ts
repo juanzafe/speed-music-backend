@@ -22,21 +22,59 @@ app.get('/', (_req, res) => {
   res.send('Backend funcionando 🚀');
 });
 
-// Test download endpoint (temporary) 
+// Test download endpoint (temporary) - tries multiple methods
 app.get('/test-download', async (_req, res) => {
-  try {
-    const { ytdlp, ffmpegDir } = await ensureBinaries();
-    const info = getBinInfo();
-    const { execFile: ef } = require('child_process');
-    const args = ['ytsearch1:Bohemian Rhapsody Queen', '--extract-audio', '--audio-format', 'mp3', '--audio-quality', '192K', '--no-playlist', '--max-downloads', '1', '--output', '/tmp/test.%(ext)s', '--no-warnings', '--verbose', '--extractor-args', 'youtube:player_client=web'];
-    if (ffmpegDir) args.push('--ffmpeg-location', ffmpegDir);
-    const env = { ...process.env, PATH: `${info.binDir}:${process.env.PATH}` };
-    ef(ytdlp, args, { timeout: 90_000, env }, (error: any, stdout: string, stderr: string) => {
-      res.json({ error: error?.message, stdout: stdout?.substring(0, 2000), stderr: stderr?.substring(0, 2000), code: error?.code });
-    });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  const results: Record<string, any> = {};
+  const { ytdlp } = await ensureBinaries();
+  const info = getBinInfo();
+  const env = { ...process.env, PATH: `${info.binDir}:${process.env.PATH}` };
+  const { execFileSync: efs } = require('child_process');
+
+  // Test multiple YouTube player clients
+  const clients = ['ios', 'mweb', 'tv_embedded', 'web_music', 'android_music', 'web_creator'];
+  for (const client of clients) {
+    try {
+      const out = efs(ytdlp, [
+        'ytsearch1:Bohemian Rhapsody Queen', '--dump-json', '--no-warnings',
+        '--extractor-args', `youtube:player_client=${client}`,
+      ], { timeout: 30_000, env, encoding: 'utf8' });
+      const json = JSON.parse(out);
+      results[`yt_${client}`] = { ok: true, title: json.title, duration: json.duration, formats: json.formats?.length };
+    } catch (e: any) {
+      results[`yt_${client}`] = { ok: false, error: (e.stderr || e.message)?.substring(0, 300) };
+    }
   }
+
+  // Test Invidious dynamic instances
+  try {
+    const instRes = await axios.get('https://api.invidious.io/instances.json?sort_by=type,health', { timeout: 10_000 });
+    const instances = instRes.data
+      .filter((i: any) => i[1]?.type === 'https' && i[1]?.api === true)
+      .slice(0, 5)
+      .map((i: any) => i[1].uri);
+    results.invidious_instances = instances;
+    for (const inst of instances) {
+      try {
+        const sr = await axios.get(`${inst}/api/v1/search`, { params: { q: 'Bohemian Rhapsody', type: 'video' }, timeout: 10_000 });
+        if (sr.data?.[0]?.videoId) {
+          const vid = sr.data[0].videoId;
+          const vr = await axios.get(`${inst}/api/v1/videos/${vid}`, { timeout: 10_000 });
+          const audio = vr.data?.adaptiveFormats?.filter((f: any) => f.type?.startsWith('audio/'));
+          results[`inv_${new URL(inst).hostname}`] = { ok: true, videoId: vid, audioFormats: audio?.length };
+        }
+      } catch (e: any) { results[`inv_${new URL(inst).hostname}`] = { ok: false, error: e.message?.substring(0, 100) }; }
+    }
+  } catch (e: any) { results.invidious_api = { ok: false, error: e.message?.substring(0, 100) }; }
+
+  // Test Cobalt API
+  try {
+    const cr = await axios.post('https://api.cobalt.tools/', {
+      url: 'https://www.youtube.com/watch?v=fJ9rUzIMcZQ', downloadMode: 'audio', audioFormat: 'mp3'
+    }, { headers: { Accept: 'application/json' }, timeout: 15_000 });
+    results.cobalt = { ok: true, status: cr.data?.status, url: cr.data?.url?.substring(0, 100) };
+  } catch (e: any) { results.cobalt = { ok: false, error: e.message?.substring(0, 100) }; }
+
+  res.json(results);
 });
 
 // Debug endpoint (temporary)
