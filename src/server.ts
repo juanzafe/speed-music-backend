@@ -22,6 +22,21 @@ app.get('/', (_req, res) => {
   res.send('Backend funcionando 🚀');
 });
 
+// Test download endpoint (temporary) 
+app.get('/test-download', async (_req, res) => {
+  try {
+    const { ytdlp, ffmpegDir } = await ensureBinaries();
+    const { execFile: ef } = require('child_process');
+    const args = ['ytsearch1:Bohemian Rhapsody Queen', '--extract-audio', '--audio-format', 'mp3', '--audio-quality', '192K', '--no-playlist', '--max-downloads', '1', '--output', '/tmp/test.%(ext)s', '--no-warnings', '--verbose'];
+    if (ffmpegDir) args.push('--ffmpeg-location', ffmpegDir);
+    ef(ytdlp, args, { timeout: 90_000 }, (error: any, stdout: string, stderr: string) => {
+      res.json({ error: error?.message, stdout: stdout?.substring(0, 2000), stderr: stderr?.substring(0, 2000), code: error?.code });
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Debug endpoint (temporary)
 app.get('/debug', async (_req, res) => {
   try {

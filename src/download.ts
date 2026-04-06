@@ -173,7 +173,7 @@ export async function downloadSong(
         console.error('yt-dlp stderr:', stderr);
         console.error('yt-dlp stdout:', stdout);
         console.error('yt-dlp error:', error.message);
-        reject(new Error('Error descargando canción'));
+        reject(new Error(`yt-dlp failed: ${stderr || error.message}`));
         return;
       }
 
