@@ -168,15 +168,20 @@ function runYtDlp(
     const env = { ...process.env, PATH: `${BIN_DIR}:${process.env.PATH}` };
 
     execFile(ytdlp, args, { timeout: 120_000, env }, (error, stdout, stderr) => {
-      if (fs.existsSync(outputPath)) {
-        resolve(outputPath);
-        return;
-      }
-
       if (error) {
         console.error(`[${searchPrefix}] stderr:`, stderr?.substring(0, 500));
         console.error(`[${searchPrefix}] error:`, error.message);
+        // Delete partial file left by failed conversion
+        if (fs.existsSync(outputPath)) {
+          console.warn(`[${searchPrefix}] Removing partial file: ${outputPath}`);
+          fs.unlinkSync(outputPath);
+        }
         reject(new Error(stderr || error.message));
+        return;
+      }
+
+      if (fs.existsSync(outputPath)) {
+        resolve(outputPath);
         return;
       }
 

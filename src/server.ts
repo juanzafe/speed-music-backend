@@ -280,6 +280,14 @@ app.get('/download/:id/prepare', async (req, res) => {
 app.get('/download/:id', async (req, res) => {
   try {
     const trackId = req.params.id;
+
+    // Don't serve file while background download is still writing it
+    const job = downloadJobs.get(trackId);
+    if (job && job.status === 'downloading') {
+      res.status(409).json({ error: 'Download still in progress' });
+      return;
+    }
+
     const trackInfo = await getTrackInfo(trackId);
 
     console.log(`Downloading: ${trackInfo.title} - ${trackInfo.artist}`);
