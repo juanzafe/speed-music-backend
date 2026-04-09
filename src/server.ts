@@ -5,7 +5,7 @@ import axios from 'axios';
 import path from 'path';
 import fs from 'fs';
 import { getTrackInfo, searchTracks, getDeezerPreview } from './spotify';
-import { downloadSong, isCached, ensureBinaries, getBinInfo } from './download';
+import { downloadSong, isCached, ensureBinaries, getBinInfo, searchPipedVideoId, getPipedAudioStream, getPipedInstances } from './download';
 
 dotenv.config();
 
@@ -190,25 +190,8 @@ app.get('/download/:id/video-id', async (req, res) => {
 
     let videoId = '';
 
-    // Try Piped search first (faster, no yt-dlp needed)
-    const pipedInstances = [
-      'https://api.piped.private.coffee',
-      'https://api.piped.projectsegfau.lt',
-    ];
-    for (const instance of pipedInstances) {
-      try {
-        const searchRes = await axios.get(`${instance}/search`, {
-          params: { q: query, filter: 'music_songs' },
-          timeout: 10_000,
-        });
-        const items = searchRes.data?.items;
-        if (items?.length) {
-          const url: string = items[0].url || '';
-          videoId = url.replace('/watch?v=', '').split('&')[0];
-          if (videoId) break;
-        }
-      } catch {}
-    }
+    // Try Piped search with dynamic instances
+    videoId = (await searchPipedVideoId(query)) || '';
 
     // Fallback to yt-dlp search
     if (!videoId) {
@@ -233,6 +216,91 @@ app.get('/download/:id/video-id', async (req, res) => {
   } catch (error: any) {
     console.error('Video ID error:', error.message);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Proxy audio stream from Piped → client (avoids CORS issues)
+app.get('/download/:id/stream', async (req, res) => {
+  try {
+    const trackId = req.params.id;
+
+    // Get video ID (cache → Piped search → yt-dlp search)
+    let videoId = videoIdCache.get(trackId);
+    if (!videoId) {
+      const trackInfo = await getTrackInfo(trackId);
+      const query = `${trackInfo.title} ${trackInfo.artist}`;
+      videoId = (await searchPipedVideoId(query)) || undefined;
+
+      // Fallback: yt-dlp search
+      if (!videoId) {
+        try {
+          const { ytdlp } = await ensureBinaries();
+          const { execFileSync: efs } = require('child_process');
+          videoId = efs(ytdlp, [
+            '--flat-playlist', '--print', 'id', `ytsearch1:${query}`, '--no-warnings',
+          ], { timeout: 20_000, encoding: 'utf8' }).trim();
+        } catch {}
+      }
+
+      if (videoId) videoIdCache.set(trackId, videoId);
+    }
+
+    if (!videoId) {
+      res.status(404).json({ error: 'No video found' });
+      return;
+    }
+
+    // Get best audio stream URL from Piped (tries multiple instances)
+    const stream = await getPipedAudioStream(videoId);
+    if (!stream) {
+      res.status(502).json({ error: 'No audio stream available' });
+      return;
+    }
+
+    console.log(`[Stream proxy] Fetching audio: ${stream.mimeType} ${stream.bitrate}bps`);
+    console.log(`[Stream proxy] URL host: ${new URL(stream.url).hostname}`);
+
+    // Use Node's native https to avoid axios header issues with Piped proxy
+    const https = require('https');
+    const http = require('http');
+    const streamUrl = new URL(stream.url);
+    const transport = streamUrl.protocol === 'https:' ? https : http;
+
+    const proxyReq = transport.get(stream.url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': '*/*',
+      },
+      timeout: 120_000,
+    }, (proxyRes: any) => {
+      if (proxyRes.statusCode && proxyRes.statusCode >= 400) {
+        console.error(`[Stream proxy] Upstream returned ${proxyRes.statusCode}`);
+        if (!res.headersSent) {
+          res.status(502).json({ error: `Upstream returned ${proxyRes.statusCode}` });
+        }
+        return;
+      }
+
+      const contentType = stream.mimeType.includes('mp4') ? 'audio/mp4' : 'audio/webm';
+      res.setHeader('Content-Type', contentType);
+      if (proxyRes.headers['content-length']) {
+        res.setHeader('Content-Length', proxyRes.headers['content-length']);
+      }
+      res.setHeader('Accept-Ranges', 'bytes');
+      proxyRes.pipe(res);
+    });
+
+    proxyReq.on('error', (err: any) => {
+      console.error('[Stream proxy] Request error:', err.message);
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Error streaming audio' });
+      }
+    });
+  } catch (error: any) {
+    console.error('Stream proxy error:', error.message);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Error streaming audio' });
+    }
   }
 });
 

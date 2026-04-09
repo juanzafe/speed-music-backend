@@ -235,10 +235,97 @@ export async function downloadSong(
 
 // ── Piped API (YouTube proxy) ──────────────────────────
 
-const PIPED_INSTANCES = [
+const FALLBACK_PIPED_INSTANCES = [
+  'https://pipedapi.kavin.rocks',
   'https://api.piped.private.coffee',
-  'https://api.piped.projectsegfau.lt',
+  'https://pipedapi.leptons.xyz',
+  'https://pipedapi.adminforge.de',
+  'https://api.piped.yt',
+  'https://pipedapi.darkness.services',
+  'https://piped-api.privacy.com.de',
+  'https://pipedapi.drgns.space',
+  'https://pipedapi.ducks.party',
+  'https://pipedapi.orangenet.cc',
 ];
+
+let _cachedPipedInstances: string[] | null = null;
+let _pipedCacheTime = 0;
+const PIPED_CACHE_TTL = 30 * 60_000; // 30 minutes
+
+/** Fetch working Piped API instances dynamically, with fallback to hardcoded list */
+async function getPipedInstances(): Promise<string[]> {
+  if (_cachedPipedInstances && Date.now() - _pipedCacheTime < PIPED_CACHE_TTL) {
+    return _cachedPipedInstances;
+  }
+  try {
+    const res = await axios.get('https://piped-instances.kavin.rocks/', { timeout: 10_000 });
+    const all: string[] = res.data
+      .filter((i: any) => i.api_url && i.uptime_24h >= 90)
+      .sort((a: any, b: any) => (b.uptime_7d || 0) - (a.uptime_7d || 0))
+      .map((i: any) => i.api_url);
+    if (all.length > 0) {
+      _cachedPipedInstances = all;
+      _pipedCacheTime = Date.now();
+      console.log(`[Piped] Loaded ${all.length} instances`);
+      return all;
+    }
+  } catch (e: any) {
+    console.warn('[Piped] Failed to fetch instances list:', e.message?.substring(0, 100));
+  }
+  return FALLBACK_PIPED_INSTANCES;
+}
+
+/** Find a videoId via Piped search (works from datacenter IPs) */
+async function searchPipedVideoId(query: string): Promise<string | null> {
+  const instances = await getPipedInstances();
+  for (const instance of instances.slice(0, 5)) {
+    try {
+      const searchRes = await axios.get(`${instance}/search`, {
+        params: { q: query, filter: 'music_songs' },
+        timeout: 12_000,
+      });
+      const items = searchRes.data?.items;
+      if (items?.length) {
+        const url: string = items[0].url || '';
+        const vid = url.replace('/watch?v=', '').split('&')[0];
+        if (vid) return vid;
+      }
+    } catch {}
+  }
+  return null;
+}
+
+/** Get audio stream URL from Piped for a given videoId */
+async function getPipedAudioStream(
+  videoId: string,
+  instances?: string[]
+): Promise<{ url: string; mimeType: string; bitrate: number } | null> {
+  const pipedInstances = instances || (await getPipedInstances());
+  for (const instance of pipedInstances.slice(0, 6)) {
+    try {
+      const streamRes = await axios.get(`${instance}/streams/${videoId}`, {
+        timeout: 15_000,
+      });
+      const audioStreams: any[] = streamRes.data?.audioStreams || [];
+      if (!audioStreams.length) continue;
+
+      // Prefer mp4 audio (better ffmpeg compatibility), then any audio
+      const valid = audioStreams.filter((s: any) => s.url && s.mimeType?.startsWith('audio/'));
+      const mp4Sorted = valid
+        .filter((s: any) => s.mimeType?.includes('mp4'))
+        .sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0));
+      const allSorted = valid.sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0));
+      const best = mp4Sorted[0] || allSorted[0];
+
+      if (best?.url) {
+        return { url: best.url, mimeType: best.mimeType, bitrate: best.bitrate || 0 };
+      }
+    } catch (e: any) {
+      console.warn(`[Piped] streams from ${instance} failed: ${e.message?.substring(0, 100)}`);
+    }
+  }
+  return null;
+}
 
 /**
  * Download audio via Piped API (YouTube proxy).
@@ -250,87 +337,90 @@ async function downloadViaPiped(
   outputPath: string,
   ffmpegDir?: string
 ): Promise<string> {
-  for (const instance of PIPED_INSTANCES) {
-    try {
-      console.log(`[Piped] Trying ${instance}...`);
+  const instances = await getPipedInstances();
 
-      // Search for the video
+  // Search for videoId
+  let videoId: string | null = null;
+  for (const instance of instances.slice(0, 5)) {
+    try {
       const searchRes = await axios.get(`${instance}/search`, {
         params: { q: query, filter: 'music_songs' },
-        timeout: 15_000,
+        timeout: 12_000,
       });
-
       const items = searchRes.data?.items;
-      if (!items?.length) {
-        console.warn(`[Piped] No results from ${instance}`);
-        continue;
-      }
-
-      // Get video ID from first result
-      const videoUrl: string = items[0].url || '';
-      const videoId = videoUrl.split('v=')[1] || videoUrl.replace('/watch?v=', '');
-      if (!videoId) continue;
-
-      console.log(`[Piped] Found: ${items[0].title} (${videoId})`);
-
-      // Get audio streams
-      const streamRes = await axios.get(`${instance}/streams/${videoId}`, {
-        timeout: 15_000,
-      });
-
-      const audioStreams: any[] = streamRes.data?.audioStreams || [];
-      if (!audioStreams.length) {
-        console.warn(`[Piped] No audio streams for ${videoId}`);
-        continue;
-      }
-
-      // Pick best audio stream (highest bitrate)
-      const best = audioStreams
-        .filter((s) => s.url && s.mimeType?.startsWith('audio/'))
-        .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0];
-
-      if (!best?.url) continue;
-
-      console.log(`[Piped] Stream: ${best.mimeType} ${best.bitrate}bps`);
-
-      // Convert to MP3 via ffmpeg
-      const ffmpegBin = ffmpegDir
-        ? path.join(ffmpegDir, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg')
-        : 'ffmpeg';
-
-      await new Promise<void>((resolve, reject) => {
-        execFile(
-          ffmpegBin,
-          ['-y', '-i', best.url, '-vn', '-acodec', 'libmp3lame', '-ab', '192k', outputPath],
-          { timeout: 120_000 },
-          (error, _stdout, stderr) => {
-            if (error) {
-              console.error('[Piped] ffmpeg error:', stderr?.substring(0, 300));
-              reject(error);
-            } else {
-              resolve();
-            }
-          }
-        );
-      });
-
-      // Verify file is a real song (not a tiny preview)
-      if (fs.existsSync(outputPath)) {
-        const size = fs.statSync(outputPath).size;
-        if (size > 500_000) { // >500KB = likely a full song
-          console.log(`[Piped] Success: ${(size / 1_048_576).toFixed(1)} MB`);
-          return outputPath;
+      if (items?.length) {
+        const url: string = items[0].url || '';
+        videoId = url.replace('/watch?v=', '').split('&')[0];
+        if (videoId) {
+          console.log(`[Piped] Found: ${items[0].title} (${videoId})`);
+          break;
         }
-        console.warn(`[Piped] File too small (${size} bytes), discarding`);
-        fs.unlinkSync(outputPath);
       }
     } catch (e: any) {
-      console.warn(`[Piped] ${instance} failed: ${e.message?.substring(0, 200)}`);
+      console.warn(`[Piped] Search on ${instance} failed: ${e.message?.substring(0, 100)}`);
     }
+  }
+
+  if (!videoId) throw new Error('Piped search: no video found');
+
+  // Get audio stream URL (try multiple instances for streams)
+  const stream = await getPipedAudioStream(videoId, instances);
+  if (!stream) throw new Error('Piped: no audio streams found');
+
+  console.log(`[Piped] Stream: ${stream.mimeType} ${stream.bitrate}bps`);
+
+  // Try ffmpeg conversion first, then direct download as fallback
+  const ffmpegBin = ffmpegDir
+    ? path.join(ffmpegDir, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg')
+    : 'ffmpeg';
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      execFile(
+        ffmpegBin,
+        ['-y', '-i', stream.url, '-vn', '-acodec', 'libmp3lame', '-ab', '192k', outputPath],
+        { timeout: 120_000 },
+        (error, _stdout, stderr) => {
+          if (error) {
+            console.error('[Piped] ffmpeg error:', stderr?.substring(0, 300));
+            reject(error);
+          } else {
+            resolve();
+          }
+        }
+      );
+    });
+  } catch {
+    // ffmpeg failed — download raw audio directly
+    console.log('[Piped] ffmpeg failed, downloading raw audio...');
+    const audioRes = await axios.get(stream.url, {
+      responseType: 'arraybuffer',
+      timeout: 120_000,
+      maxContentLength: 50 * 1024 * 1024,
+    });
+    const rawPath = outputPath.replace('.mp3', stream.mimeType.includes('mp4') ? '.m4a' : '.webm');
+    fs.writeFileSync(rawPath, audioRes.data);
+    // Rename to .mp3 so it's found by isCached
+    if (rawPath !== outputPath) {
+      fs.renameSync(rawPath, outputPath);
+    }
+  }
+
+  // Verify file is a real song (not a tiny preview)
+  if (fs.existsSync(outputPath)) {
+    const size = fs.statSync(outputPath).size;
+    if (size > 500_000) {
+      console.log(`[Piped] Success: ${(size / 1_048_576).toFixed(1)} MB`);
+      return outputPath;
+    }
+    console.warn(`[Piped] File too small (${size} bytes), discarding`);
+    fs.unlinkSync(outputPath);
   }
 
   throw new Error('Piped download failed from all instances');
 }
+
+export { searchPipedVideoId, getPipedAudioStream, getPipedInstances };
 
 /** Check if a song is already cached */
 export function isCached(trackId: string): boolean {
