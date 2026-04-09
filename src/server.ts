@@ -152,12 +152,17 @@ const downloadJobs = new Map<string, { status: 'downloading' | 'ready' | 'error'
 // Check download status (includes file size when ready)
 app.get('/download/:id/status', async (req, res) => {
   const trackId = req.params.id;
+  // Check active jobs FIRST — file may exist on disk but still be written by ffmpeg/yt-dlp
+  const job = downloadJobs.get(trackId);
+  if (job && job.status === 'downloading') {
+    res.json({ status: 'downloading' });
+    return;
+  }
   if (isCached(trackId)) {
     const size = fs.statSync(path.join(__dirname, '..', 'downloads', `${trackId}.mp3`)).size;
     res.json({ status: 'ready', size });
     return;
   }
-  const job = downloadJobs.get(trackId);
   if (job) {
     res.json({ status: job.status, error: job.error });
     return;
