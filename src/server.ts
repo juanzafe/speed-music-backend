@@ -5,7 +5,7 @@ import axios from 'axios';
 import path from 'path';
 import fs from 'fs';
 import { getTrackInfo, searchTracks, getDeezerPreview } from './spotify';
-import { downloadSong, isCached, ensureBinaries, getBinInfo, searchPipedVideoId, getPipedAudioStream, getPipedInstances } from './download';
+import { downloadSong, isCached, ensureBinaries, getBinInfo, searchPipedVideoId, getPipedAudioStream, getPipedInstances, searchInvidiousVideoId, getInvidiousAudioStream, getInvidiousInstances } from './download';
 
 dotenv.config();
 
@@ -118,8 +118,10 @@ app.get('/search', async (req, res) => {
 
     res.json(enriched);
   } catch (error: any) {
+    const status = error?.response?.status;
     const msg = error?.response?.data?.error?.message || error?.message || 'Unknown';
-    console.error('Search error:', msg);
+    console.error('Search error:', status, msg);
+    console.error('Search stack:', error?.stack?.substring(0, 300));
     res.status(500).json({ error: 'Error buscando canciones' });
   }
 });
@@ -190,20 +192,20 @@ app.get('/download/:id/video-id', async (req, res) => {
 
     let videoId = '';
 
-    // Try Piped search with dynamic instances
-    videoId = (await searchPipedVideoId(query)) || '';
+    // Try yt-dlp search first (fastest locally)
+    try {
+      const { ytdlp } = await ensureBinaries();
+      const { execFileSync: efs } = require('child_process');
+      videoId = efs(ytdlp, [
+        '--flat-playlist', '--print', 'id', `ytsearch1:${query}`, '--no-warnings',
+      ], { timeout: 20_000, encoding: 'utf8' }).trim();
+    } catch (e: any) {
+      console.warn('yt-dlp search failed:', e.message?.substring(0, 100));
+    }
 
-    // Fallback to yt-dlp search
+    // Fallback: Invidious → Piped search
     if (!videoId) {
-      try {
-        const { ytdlp } = await ensureBinaries();
-        const { execFileSync: efs } = require('child_process');
-        videoId = efs(ytdlp, [
-          '--flat-playlist', '--print', 'id', `ytsearch1:${query}`, '--no-warnings',
-        ], { timeout: 20_000, encoding: 'utf8' }).trim();
-      } catch (e: any) {
-        console.warn('yt-dlp search failed:', e.message?.substring(0, 100));
-      }
+      videoId = (await searchInvidiousVideoId(query)) || (await searchPipedVideoId(query)) || '';
     }
 
     if (!videoId) {
@@ -224,22 +226,24 @@ app.get('/download/:id/stream', async (req, res) => {
   try {
     const trackId = req.params.id;
 
-    // Get video ID (cache → Piped search → yt-dlp search)
+    // Get video ID (cache → yt-dlp → Invidious → Piped search)
     let videoId = videoIdCache.get(trackId);
     if (!videoId) {
       const trackInfo = await getTrackInfo(trackId);
       const query = `${trackInfo.title} ${trackInfo.artist}`;
-      videoId = (await searchPipedVideoId(query)) || undefined;
 
-      // Fallback: yt-dlp search
+      // Try yt-dlp search first (fastest, works locally and on some servers)
+      try {
+        const { ytdlp } = await ensureBinaries();
+        const { execFileSync: efs } = require('child_process');
+        videoId = efs(ytdlp, [
+          '--flat-playlist', '--print', 'id', `ytsearch1:${query}`, '--no-warnings',
+        ], { timeout: 20_000, encoding: 'utf8' }).trim() || undefined;
+      } catch {}
+
+      // Fallback: Invidious search → Piped search
       if (!videoId) {
-        try {
-          const { ytdlp } = await ensureBinaries();
-          const { execFileSync: efs } = require('child_process');
-          videoId = efs(ytdlp, [
-            '--flat-playlist', '--print', 'id', `ytsearch1:${query}`, '--no-warnings',
-          ], { timeout: 20_000, encoding: 'utf8' }).trim();
-        } catch {}
+        videoId = (await searchInvidiousVideoId(query)) || (await searchPipedVideoId(query)) || undefined;
       }
 
       if (videoId) videoIdCache.set(trackId, videoId);
@@ -250,17 +254,53 @@ app.get('/download/:id/stream', async (req, res) => {
       return;
     }
 
-    // Get best audio stream URL from Piped (tries multiple instances)
+    // Try Invidious instances with retry (proxied via latest_version?local=true)
+    const invInstances = await getInvidiousInstances();
+    const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+    for (const instance of invInstances.slice(0, 3)) {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (attempt > 0) {
+          console.log(`[Stream proxy] Retry ${attempt} after ${attempt * 2}s...`);
+          await delay(attempt * 2000);
+        }
+        const invUrl = `${instance}/latest_version?id=${videoId}&itag=140&local=true`;
+        console.log(`[Stream proxy] Invidious ${instance} (attempt ${attempt + 1})`);
+        try {
+          const audioRes = await axios.get(invUrl, {
+            responseType: 'stream',
+            timeout: 120_000,
+            maxRedirects: 10,
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            },
+          });
+
+          res.setHeader('Content-Type', 'audio/mp4');
+          if (audioRes.headers['content-length']) {
+            res.setHeader('Content-Length', audioRes.headers['content-length']);
+          }
+          res.setHeader('Accept-Ranges', 'bytes');
+          audioRes.data.pipe(res);
+          return;
+        } catch (invErr: any) {
+          const status = invErr.response?.status;
+          console.warn(`[Stream proxy] Invidious ${instance} failed (${status}): ${invErr.message?.substring(0, 100)}`);
+          // Only retry on rate-limit (401/429), not on 404/500
+          if (status && status !== 401 && status !== 429) break;
+        }
+      }
+    }
+
+    // Fallback to Piped
     const stream = await getPipedAudioStream(videoId);
     if (!stream) {
       res.status(502).json({ error: 'No audio stream available' });
       return;
     }
 
-    console.log(`[Stream proxy] Fetching audio: ${stream.mimeType} ${stream.bitrate}bps`);
-    console.log(`[Stream proxy] URL host: ${new URL(stream.url).hostname}`);
+    console.log(`[Stream proxy] Piped fallback: ${stream.mimeType} ${stream.bitrate}bps`);
 
-    // Use Node's native https to avoid axios header issues with Piped proxy
     const https = require('https');
     const http = require('http');
     const streamUrl = new URL(stream.url);

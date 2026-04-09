@@ -45,29 +45,54 @@ export interface TrackInfo {
 }
 
 export async function getTrackInfo(trackId: string): Promise<TrackInfo> {
-  const token = await getToken();
-
-  // Correct Get Track Endpoint (Fixed syntax with $)
-  const res = await axios.get(
-    `https://api.spotify.com/v1/tracks/${trackId}`,
-    { headers: { Authorization: `Bearer ${token}` } }
-  );
-
-  return mapTrack(res.data);
+  for (let attempt = 0; attempt < 5; attempt++) {
+    if (attempt > 0) {
+      cachedToken = null;
+      tokenExpiresAt = 0;
+    }
+    const token = await getToken();
+    try {
+      const res = await axios.get(
+        `https://api.spotify.com/v1/tracks/${trackId}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      return mapTrack(res.data);
+    } catch (err: any) {
+      const status = err.response?.status;
+      if (status === 401 || (status && status >= 500)) {
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error('Spotify getTrackInfo failed after retries');
 }
 
 export async function searchTracks(query: string, limit = 10): Promise<TrackInfo[]> {
-  const token = await getToken();
-
-  // Spotify client_credentials limita a 10 resultados en búsqueda
   const safeLimit = Math.max(1, Math.min(limit || 10, 10));
   const url = `https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=track&limit=${safeLimit}`;
 
-  const res = await axios.get(url, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-
-  return res.data.tracks.items.map(mapTrack);
+  for (let attempt = 0; attempt < 5; attempt++) {
+    // Force fresh token on each retry
+    if (attempt > 0) {
+      cachedToken = null;
+      tokenExpiresAt = 0;
+    }
+    const token = await getToken();
+    try {
+      const res = await axios.get(url, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      return res.data.tracks.items.map(mapTrack);
+    } catch (err: any) {
+      const status = err.response?.status;
+      if (status === 401 || (status && status >= 500)) {
+        continue; // retry with fresh token
+      }
+      throw err;
+    }
+  }
+  throw new Error('Spotify search failed after retries');
 }
 
 function mapTrack(track: any): TrackInfo {
