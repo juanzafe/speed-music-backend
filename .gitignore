@@ -3,4 +3,5 @@
 node_modules
 dist
 downloads
-bin
+bin*.mp4
+*.m4a
