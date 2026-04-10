@@ -65,16 +65,20 @@ async function ensureBinaries(): Promise<{ ytdlp: string; ffmpegDir?: string }> 
     return { ytdlp: _ytdlp, ffmpegDir: _ffmpegDir };
   }
 
-  // Linux: download standalone binaries
+  // Linux: download standalone binaries (always update yt-dlp on startup)
   const ytdlpPath = path.join(BIN_DIR, 'yt-dlp');
-  if (!fs.existsSync(ytdlpPath)) {
-    console.log('Downloading yt-dlp_linux standalone...');
+  // Always re-download yt-dlp to ensure latest version (YouTube frequently breaks older versions)
+  console.log('Downloading latest yt-dlp_linux...');
+  try {
     execSync(
       `curl -L --retry 3 --max-time 120 -o "${ytdlpPath}" "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux"`,
       { stdio: 'inherit', timeout: 150_000 }
     );
     fs.chmodSync(ytdlpPath, 0o755);
-    console.log('yt-dlp downloaded OK');
+    console.log('yt-dlp updated OK');
+  } catch (e: any) {
+    console.warn('yt-dlp download failed, using existing if available:', e.message);
+    if (!fs.existsSync(ytdlpPath)) throw new Error('No yt-dlp binary available');
   }
 
   const ffmpegPath = path.join(BIN_DIR, 'ffmpeg');
@@ -192,7 +196,7 @@ function runYtDlp(
 
 /**
  * Downloads a full song using yt-dlp.
- * Tries YouTube first, falls back to SoundCloud if YouTube blocks (bot detection).
+ * Tries multiple YouTube player clients, then falls back to Invidious, Piped, SoundCloud.
  */
 export async function downloadSong(
   trackId: string,
@@ -208,13 +212,25 @@ export async function downloadSong(
   const { ytdlp, ffmpegDir } = await ensureBinaries();
   const query = `${title} ${artist}`;
 
-  // Try YouTube via yt-dlp (works from residential IPs)
+  // Try YouTube via yt-dlp with multiple player clients (YouTube blocks different clients at different times)
+  const playerClients = ['ios', 'android_vr', 'web', 'mweb', 'android_music', 'tv_embedded'];
+  for (const client of playerClients) {
+    try {
+      console.log(`[yt-dlp] Trying player_client=${client}...`);
+      return await runYtDlp(ytdlp, 'ytsearch1:', query, outputPath, ffmpegDir, [
+        '--extractor-args', `youtube:player_client=${client}`,
+      ]);
+    } catch (err: any) {
+      console.warn(`[yt-dlp] ${client} failed:`, err.message?.substring(0, 150));
+    }
+  }
+
+  // Try without specifying player client (let yt-dlp pick default)
   try {
-    return await runYtDlp(ytdlp, 'ytsearch1:', query, outputPath, ffmpegDir, [
-      '--extractor-args', 'youtube:player_client=web',
-    ]);
-  } catch (ytErr: any) {
-    console.warn('YouTube yt-dlp failed, trying Piped API...', ytErr.message?.substring(0, 200));
+    console.log('[yt-dlp] Trying default client...');
+    return await runYtDlp(ytdlp, 'ytsearch1:', query, outputPath, ffmpegDir);
+  } catch (err: any) {
+    console.warn('[yt-dlp] Default failed:', err.message?.substring(0, 150));
   }
 
   // Fallback: Invidious API (proxies YouTube, works from datacenter IPs)
@@ -231,7 +247,7 @@ export async function downloadSong(
     console.warn('Piped failed:', pipedErr.message?.substring(0, 200));
   }
 
-  // Last resort: SoundCloud (might give short previews)
+  // Last resort: SoundCloud
   try {
     return await runYtDlp(ytdlp, 'scsearch1:', query, outputPath, ffmpegDir);
   } catch (scErr: any) {
