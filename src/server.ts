@@ -5,7 +5,7 @@ import axios from 'axios';
 import path from 'path';
 import fs from 'fs';
 import { getTrackInfo, searchTracks, getDeezerPreview } from './spotify';
-import { downloadSong, isCached, ensureBinaries, getBinInfo, searchPipedVideoId, getPipedAudioStream, getPipedInstances, searchInvidiousVideoId, getInvidiousAudioStream, getInvidiousInstances } from './download';
+import { downloadSong, isCached, ensureBinaries, getBinInfo, searchPipedVideoId, getPipedAudioStream, getPipedInstances, searchInvidiousVideoId, getInvidiousAudioStream, getInvidiousInstances, updateCookies, hasCookies } from './download';
 
 dotenv.config();
 
@@ -23,6 +23,29 @@ app.get('/', (_req, res) => {
   res.send('Backend funcionando 🚀');
 });
 
+// Upload YouTube cookies (Netscape cookies.txt format)
+// Protected by admin key in env var
+app.post('/admin/cookies', (req, res) => {
+  const key = req.headers['x-admin-key'] || req.query.key;
+  const adminKey = process.env.ADMIN_KEY;
+  if (!adminKey || key !== adminKey) {
+    res.status(403).json({ error: 'Forbidden' });
+    return;
+  }
+  const { cookies } = req.body;
+  if (!cookies || typeof cookies !== 'string') {
+    res.status(400).json({ error: 'cookies field required (Netscape cookies.txt content)' });
+    return;
+  }
+  updateCookies(cookies);
+  res.json({ ok: true, size: cookies.length, hasCookies: hasCookies() });
+});
+
+// Check cookies status
+app.get('/admin/cookies/status', (_req, res) => {
+  res.json({ hasCookies: hasCookies() });
+});
+
 // Test download endpoint (temporary) - tries multiple methods
 app.get('/test-download', async (_req, res) => {
   const results: Record<string, any> = {};
@@ -31,19 +54,37 @@ app.get('/test-download', async (_req, res) => {
   const env = { ...process.env, PATH: `${info.binDir}:${process.env.PATH}` };
   const { execFileSync: efs } = require('child_process');
 
-  // Test multiple YouTube player clients
-  const clients = ['ios', 'mweb', 'tv_embedded', 'web_music', 'android_music', 'web_creator'];
+  results.hasCookies = hasCookies();
+
+  // Build base args (include cookies if available)
+  const cookiesArgs = hasCookies() ? ['--cookies', path.join(__dirname, '..', 'cookies.txt')] : [];
+
+  // Test YouTube with cookies
+  const clients = ['default,mediaconnect', 'ios', 'web'];
   for (const client of clients) {
     try {
       const out = efs(ytdlp, [
         'ytsearch1:Bohemian Rhapsody Queen', '--dump-json', '--no-warnings',
         '--extractor-args', `youtube:player_client=${client}`,
+        ...cookiesArgs,
       ], { timeout: 30_000, env, encoding: 'utf8' });
       const json = JSON.parse(out);
-      results[`yt_${client}`] = { ok: true, title: json.title, duration: json.duration, formats: json.formats?.length };
+      results[`yt_${client.replace(',', '_')}`] = { ok: true, title: json.title, duration: json.duration, formats: json.formats?.length };
     } catch (e: any) {
-      results[`yt_${client}`] = { ok: false, error: (e.stderr || e.message)?.substring(0, 300) };
+      results[`yt_${client.replace(',', '_')}`] = { ok: false, error: (e.stderr || e.message)?.substring(0, 300) };
     }
+  }
+
+  // Test SoundCloud
+  try {
+    const out = efs(ytdlp, [
+      'scsearch1:Bohemian Rhapsody Queen', '--dump-json', '--no-warnings',
+      ...cookiesArgs,
+    ], { timeout: 30_000, env, encoding: 'utf8' });
+    const json = JSON.parse(out);
+    results.soundcloud = { ok: true, title: json.title, duration: json.duration, url: json.url?.substring(0, 80) };
+  } catch (e: any) {
+    results.soundcloud = { ok: false, error: (e.stderr || e.message)?.substring(0, 300) };
   }
 
   // Test Invidious dynamic instances

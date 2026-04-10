@@ -3,5 +3,8 @@
 node_modules
 dist
 downloads
-bin*.mp4
+bin
+*.mp4
 *.m4a
+cookies.txt
+cookies_b64.txt

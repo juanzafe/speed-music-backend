@@ -5,10 +5,45 @@ import axios from 'axios';
 
 const DOWNLOADS_DIR = path.join(__dirname, '..', 'downloads');
 const BIN_DIR = path.join(__dirname, '..', 'bin');
+const COOKIES_PATH = path.join(__dirname, '..', 'cookies.txt');
 
 // Ensure directories exist
 if (!fs.existsSync(DOWNLOADS_DIR)) fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
 if (!fs.existsSync(BIN_DIR)) fs.mkdirSync(BIN_DIR, { recursive: true });
+
+/** Write YouTube cookies file from env var (base64-encoded Netscape cookies.txt) */
+function setupCookies(): boolean {
+  // Check if cookies already on disk
+  if (fs.existsSync(COOKIES_PATH) && fs.statSync(COOKIES_PATH).size > 100) {
+    console.log('[Cookies] Using existing cookies.txt');
+    return true;
+  }
+  const b64 = process.env.YOUTUBE_COOKIES;
+  if (b64) {
+    try {
+      const content = Buffer.from(b64, 'base64').toString('utf8');
+      fs.writeFileSync(COOKIES_PATH, content);
+      console.log(`[Cookies] Wrote cookies.txt (${content.length} bytes)`);
+      return true;
+    } catch (e: any) {
+      console.error('[Cookies] Failed to decode YOUTUBE_COOKIES:', e.message);
+    }
+  }
+  return false;
+}
+
+/** Update cookies file from raw content */
+export function updateCookies(content: string): void {
+  fs.writeFileSync(COOKIES_PATH, content);
+  console.log(`[Cookies] Updated cookies.txt (${content.length} bytes)`);
+}
+
+/** Check if cookies are available */
+export function hasCookies(): boolean {
+  return fs.existsSync(COOKIES_PATH) && fs.statSync(COOKIES_PATH).size > 100;
+}
+
+const _hasCookies = setupCookies();
 
 /** On Windows, find local winget-installed yt-dlp */
 function findYtDlpWindows(): string {
@@ -165,6 +200,11 @@ function runYtDlp(
 
     if (ffmpegDir) {
       args.push('--ffmpeg-location', ffmpegDir);
+    }
+
+    // Use cookies if available (bypasses "Sign in to confirm you're not a bot")
+    if (hasCookies()) {
+      args.push('--cookies', COOKIES_PATH);
     }
 
     console.log(`Running: ${ytdlp} ${args.join(' ')}`);
