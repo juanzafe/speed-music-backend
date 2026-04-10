@@ -183,7 +183,8 @@ function runYtDlp(
   query: string,
   outputPath: string,
   ffmpegDir?: string,
-  extraArgs: string[] = []
+  extraArgs: string[] = [],
+  timeoutMs: number = 45_000
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const args = [
@@ -211,7 +212,7 @@ function runYtDlp(
 
     const env = { ...process.env, PATH: `${BIN_DIR}:${process.env.PATH}` };
 
-    execFile(ytdlp, args, { timeout: 45_000, env }, (error, stdout, stderr) => {
+    execFile(ytdlp, args, { timeout: timeoutMs, env }, (error, stdout, stderr) => {
       if (error) {
         console.error(`[${searchPrefix}] stderr:`, stderr?.substring(0, 500));
         console.error(`[${searchPrefix}] error:`, error.message);
@@ -236,7 +237,7 @@ function runYtDlp(
 
 /**
  * Downloads a full song using yt-dlp.
- * Fast strategy: try best options in parallel with short timeouts, then fallbacks.
+ * Strategy: SoundCloud first (works from datacenter), then YouTube, then proxies.
  */
 export async function downloadSong(
   trackId: string,
@@ -252,7 +253,15 @@ export async function downloadSong(
   const { ytdlp, ffmpegDir } = await ensureBinaries();
   const query = `${title} ${artist}`;
 
-  // Strategy 1: Try yt-dlp with best clients (fast, 30s timeout each)
+  // Strategy 1: SoundCloud (works from datacenter IPs, no bot detection)
+  try {
+    console.log(`[SoundCloud] Trying: ${query}`);
+    return await runYtDlp(ytdlp, 'scsearch1:', query, outputPath, ffmpegDir, [], 90_000);
+  } catch (scErr: any) {
+    console.warn('[SoundCloud] failed:', scErr.message?.substring(0, 150));
+  }
+
+  // Strategy 2: YouTube with cookies (if available)
   const fastClients = ['default,mediaconnect', 'ios', 'android_vr'];
   for (const client of fastClients) {
     try {
@@ -265,27 +274,21 @@ export async function downloadSong(
     }
   }
 
-  // Strategy 2: Invidious (proxied YouTube)
+  // Strategy 3: Invidious (proxied YouTube)
   try {
     return await downloadViaInvidious(query, outputPath, ffmpegDir);
   } catch (invErr: any) {
     console.warn('Invidious failed:', invErr.message?.substring(0, 150));
   }
 
-  // Strategy 3: Piped (proxied YouTube)
+  // Strategy 4: Piped (proxied YouTube)
   try {
     return await downloadViaPiped(query, outputPath, ffmpegDir);
   } catch (pipedErr: any) {
     console.warn('Piped failed:', pipedErr.message?.substring(0, 150));
   }
 
-  // Strategy 4: SoundCloud as alternative source
-  try {
-    return await runYtDlp(ytdlp, 'scsearch1:', query, outputPath, ffmpegDir);
-  } catch (scErr: any) {
-    console.error('All sources failed:', scErr.message?.substring(0, 150));
-    throw new Error('No se pudo descargar la canción de ninguna fuente');
-  }
+  throw new Error('No se pudo descargar la canción de ninguna fuente');
 }
 
 // ── Invidious API (YouTube proxy) ──────────────────────────
