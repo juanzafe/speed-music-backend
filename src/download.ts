@@ -171,7 +171,7 @@ function runYtDlp(
 
     const env = { ...process.env, PATH: `${BIN_DIR}:${process.env.PATH}` };
 
-    execFile(ytdlp, args, { timeout: 120_000, env }, (error, stdout, stderr) => {
+    execFile(ytdlp, args, { timeout: 45_000, env }, (error, stdout, stderr) => {
       if (error) {
         console.error(`[${searchPrefix}] stderr:`, stderr?.substring(0, 500));
         console.error(`[${searchPrefix}] error:`, error.message);
@@ -196,7 +196,7 @@ function runYtDlp(
 
 /**
  * Downloads a full song using yt-dlp.
- * Tries multiple YouTube player clients, then falls back to Invidious, Piped, SoundCloud.
+ * Fast strategy: try best options in parallel with short timeouts, then fallbacks.
  */
 export async function downloadSong(
   trackId: string,
@@ -212,46 +212,38 @@ export async function downloadSong(
   const { ytdlp, ffmpegDir } = await ensureBinaries();
   const query = `${title} ${artist}`;
 
-  // Try YouTube via yt-dlp with multiple player clients (YouTube blocks different clients at different times)
-  const playerClients = ['ios', 'android_vr', 'web', 'mweb', 'android_music', 'tv_embedded'];
-  for (const client of playerClients) {
+  // Strategy 1: Try yt-dlp with best clients (fast, 30s timeout each)
+  const fastClients = ['default,mediaconnect', 'ios', 'android_vr'];
+  for (const client of fastClients) {
     try {
       console.log(`[yt-dlp] Trying player_client=${client}...`);
       return await runYtDlp(ytdlp, 'ytsearch1:', query, outputPath, ffmpegDir, [
         '--extractor-args', `youtube:player_client=${client}`,
       ]);
     } catch (err: any) {
-      console.warn(`[yt-dlp] ${client} failed:`, err.message?.substring(0, 150));
+      console.warn(`[yt-dlp] ${client} failed:`, err.message?.substring(0, 120));
     }
   }
 
-  // Try without specifying player client (let yt-dlp pick default)
-  try {
-    console.log('[yt-dlp] Trying default client...');
-    return await runYtDlp(ytdlp, 'ytsearch1:', query, outputPath, ffmpegDir);
-  } catch (err: any) {
-    console.warn('[yt-dlp] Default failed:', err.message?.substring(0, 150));
-  }
-
-  // Fallback: Invidious API (proxies YouTube, works from datacenter IPs)
+  // Strategy 2: Invidious (proxied YouTube)
   try {
     return await downloadViaInvidious(query, outputPath, ffmpegDir);
   } catch (invErr: any) {
-    console.warn('Invidious failed:', invErr.message?.substring(0, 200));
+    console.warn('Invidious failed:', invErr.message?.substring(0, 150));
   }
 
-  // Fallback 2: Piped API (often down, kept as last resort)
+  // Strategy 3: Piped (proxied YouTube)
   try {
     return await downloadViaPiped(query, outputPath, ffmpegDir);
   } catch (pipedErr: any) {
-    console.warn('Piped failed:', pipedErr.message?.substring(0, 200));
+    console.warn('Piped failed:', pipedErr.message?.substring(0, 150));
   }
 
-  // Last resort: SoundCloud
+  // Strategy 4: SoundCloud as alternative source
   try {
     return await runYtDlp(ytdlp, 'scsearch1:', query, outputPath, ffmpegDir);
   } catch (scErr: any) {
-    console.error('All sources failed:', scErr.message?.substring(0, 200));
+    console.error('All sources failed:', scErr.message?.substring(0, 150));
     throw new Error('No se pudo descargar la canción de ninguna fuente');
   }
 }

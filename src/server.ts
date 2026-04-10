@@ -254,41 +254,31 @@ app.get('/download/:id/stream', async (req, res) => {
       return;
     }
 
-    // Try Invidious instances with retry (proxied via latest_version?local=true)
+    // Try Invidious instances (1 attempt per instance, short timeout)
     const invInstances = await getInvidiousInstances();
-    const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
 
     for (const instance of invInstances.slice(0, 3)) {
-      for (let attempt = 0; attempt < 3; attempt++) {
-        if (attempt > 0) {
-          console.log(`[Stream proxy] Retry ${attempt} after ${attempt * 2}s...`);
-          await delay(attempt * 2000);
-        }
-        const invUrl = `${instance}/latest_version?id=${videoId}&itag=140&local=true`;
-        console.log(`[Stream proxy] Invidious ${instance} (attempt ${attempt + 1})`);
-        try {
-          const audioRes = await axios.get(invUrl, {
-            responseType: 'stream',
-            timeout: 120_000,
-            maxRedirects: 10,
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            },
-          });
+      const invUrl = `${instance}/latest_version?id=${videoId}&itag=140&local=true`;
+      console.log(`[Stream proxy] Invidious ${instance}`);
+      try {
+        const audioRes = await axios.get(invUrl, {
+          responseType: 'stream',
+          timeout: 15_000,
+          maxRedirects: 10,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          },
+        });
 
-          res.setHeader('Content-Type', 'audio/mp4');
-          if (audioRes.headers['content-length']) {
-            res.setHeader('Content-Length', audioRes.headers['content-length']);
-          }
-          res.setHeader('Accept-Ranges', 'bytes');
-          audioRes.data.pipe(res);
-          return;
-        } catch (invErr: any) {
-          const status = invErr.response?.status;
-          console.warn(`[Stream proxy] Invidious ${instance} failed (${status}): ${invErr.message?.substring(0, 100)}`);
-          // Only retry on rate-limit (401/429), not on 404/500
-          if (status && status !== 401 && status !== 429) break;
+        res.setHeader('Content-Type', 'audio/mp4');
+        if (audioRes.headers['content-length']) {
+          res.setHeader('Content-Length', audioRes.headers['content-length']);
         }
+        res.setHeader('Accept-Ranges', 'bytes');
+        audioRes.data.pipe(res);
+        return;
+      } catch (invErr: any) {
+        console.warn(`[Stream proxy] Invidious ${instance} failed (${invErr.response?.status}): ${invErr.message?.substring(0, 80)}`);
       }
     }
 
